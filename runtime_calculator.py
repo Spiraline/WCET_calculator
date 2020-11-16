@@ -1,21 +1,22 @@
 import csv
 import argparse
 import os
+import copy
 
-start_t = []
-end_t = []
 actual_runtime = []
 idx = 0
+name_matching_dic = {}
+callback_info = []
+pid_exec_info = {}
+acc_runtime = {}
 
-task_dic = {} 
-acc_runtime = 0
+proc_exec_info = {}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--file', '-f', help='file path', required=True)
-    parser.add_argument('--index', '-i', type=int, nargs='+', help='valid index for pid', required=True)
     parser.add_argument('--deli', '-d', help='csv file delimiter', default=',')
-    parser.add_argument('--task', '-ts', help='task name', default='ndt_matching_pa')
+    parser.add_argument('--tmp', '-tp', action='store_true', help='If you have tmp.txt, enable it', default=False)
     args = parser.parse_args()
 
     callback_file_path = args.file + ".csv"
@@ -24,7 +25,7 @@ if __name__ == "__main__":
         exit(1)
 
     trace_file_path = args.file + ".dat"
-    if not os.path.exists(trace_file_path):
+    if not args.tmp and not os.path.exists(trace_file_path):
         print("File not exists : %s" % (trace_file_path))
         exit(1)
 
@@ -32,100 +33,132 @@ if __name__ == "__main__":
         print("trace file should be dat file!")
         exit(1)
 
-    report_cmd = 'trace-cmd report ' + trace_file_path + ' > tmp.txt'
-    os.system(report_cmd)
+    if not args.tmp:
+        report_cmd = 'trace-cmd report ' + trace_file_path + '| grep switch > tmp.txt'
+        os.system(report_cmd)
+        print("[System] trace-cmd for dat file Complete")
+    elif not os.path.exists('tmp.txt'):
+        print("You should have tmp.txt or disable --tmp option")
+        exit(1)
+    else:
+        print("[System] You already have tmp.txt")
 
-    print("[System] trace-cmd for dat file Complete")
-
-    # Parse Data
+    ### Matching PID in csv and .txt file
+    # Node name : name in csv
+    # Process name : name in trace-cmd
     with open(callback_file_path, 'r') as f:
         reader = csv.reader(f, delimiter=args.deli)
         for line in reader:
-            start_t.append(float(line[0]))
-            end_t.append(float(line[1]))
+            # Add callback info
+            callback_info.append({"start_t" : float(line[0]), "end_t" : float(line[1]), "pid" : int(line[3])})
 
-    print("[System] Parse csv file Complete")
-
-    pid_list = []
-
-    # # Check every pid for given task name
+            # Add name_matching 
+            pid = int(line[3])
+            node_name = line[5]
+            if pid not in name_matching_dic:
+                name_matching_dic[pid] = {'node_name' : node_name}
+    
     with open('tmp.txt', 'r') as f:
-        f.readline()
         for line in f.readlines():
-            taskname = line.split(']')[0].split('-')[0].split(' ')[-1]
-            pid = line.split(']')[0].split('-')[1].split(' ')[0]
-            if taskname == args.task and int(pid) not in pid_list:
-                pid_list.append(int(pid))
+            process_name = line.split(']')[0].split('-')[0].split()[-1]
+            pid = int(line.split(']')[0].split('-')[-1].split()[0])
+            if pid in name_matching_dic and 'process_name' not in name_matching_dic[pid]:
+                name_matching_dic[pid]['process_name'] = process_name
+            if process_name not in proc_exec_info:
+                proc_exec_info[process_name] = {'slice_start_t' : 0, 'isRun' : False}
+                acc_runtime[process_name] = 0
+    
+    print("[System] Name Matching between csv and trace-cmd result Complete")
+    print(name_matching_dic)
 
-    pid_list.sort()
-
-    print("[System] %d pid found for %s node ( " % (len(pid_list), args.task), end="")
-    for pid in pid_list:
-        print(pid, end=" ")
-    print(")")
-
-    for i in args.index:
-        if i > len(pid_list):
-            os.remove('tmp.txt')
-            print("[System] Invalid index. There are %d pid ( " % len(pid_list), end="")
-            for pid in pid_list:
-                print(pid, end=" ")
-            print(") only.")
-            exit(1)
-        task_dic[pid_list[i]] = {"slice_start_t" : 0, "isRun" : False}
-
+    ### Parse trace-cmd result 
     with open('tmp.txt', 'r') as f:
-        # for cpu number line
-        f.readline()
-        for line in f.readlines():
-            ts = float(line.split(': ')[0].split(' ')[-1])
-            task = line.split(': ')[1]
+        tracecmd_raw = f.readlines()
+        line_num = len(tracecmd_raw)
+        line_idx = 0
+        prev_idx = 0
 
-            if ts > end_t[idx]:
-                for pid in task_dic:
-                    # if task was running, add remaining execution time
-                    if task_dic[pid]["isRun"]:
-                        acc_runtime = acc_runtime + (end_t[idx] - task_dic[pid]["slice_start_t"])
-                    task_dic[pid]["slice_start_t"] = 0
-                    task_dic[pid]["isRun"] = False
-                actual_runtime.append(acc_runtime)
-                acc_runtime = 0
-                idx = idx+1
-                if idx >= len(end_t):
+        for p_name in acc_runtime:
+            acc_runtime[p_name] = 0
+
+        while line_idx < line_num:
+            running_pid = callback_info[idx]["pid"]
+            line = tracecmd_raw[line_idx]
+            ts = float(line.split(': ')[0].split()[-1]) / 1000000000
+            src_pid = int(line.split(' ==> ')[0].split(' [')[-2].split()[-1].split(':')[-1])
+            src_proc = line.split(' ==> ')[0].split(' [')[-2].split()[-1].split(':')[0]
+            dst_pid = int(line.split(' ==> ')[1].split(':')[-1].split()[0])
+            dst_proc = line.split(' ==> ')[1].split(':')[0]
+
+            if ts > callback_info[idx]['end_t'] or line_idx == line_num - 1:
+                # Add remain execution time if running
+                for p_name in acc_runtime:
+                    if proc_exec_info[p_name]["isRun"]:
+                        acc_runtime[p_name] += (callback_info[idx]['end_t'] - proc_exec_info[p_name]["slice_start_t"])
+
+                for p_name in proc_exec_info:
+                    proc_exec_info[p_name]["slice_start_t"] = 0
+                    proc_exec_info[p_name]["isRun"] = False
+
+                actual_runtime.append(copy.deepcopy(acc_runtime))
+                
+                for p_name in acc_runtime:
+                    acc_runtime[p_name] = 0
+
+                idx = idx + 1
+
+                if idx >= len(callback_info) or line_idx == line_num - 1:
                     break
 
-            if task == 'sched_switch' and ts > start_t[idx]:
-                src_task = line.split(' ==> ')[0].split(' [')[-2].split(' ')[-1].split(':')[0]
-                src_pid = line.split(' ==> ')[0].split(' [')[-2].split(' ')[-1].split(':')[-1]
-                dst_task = line.split(' ==> ')[1].split(':')[0]
-                dst_pid = line.split(' ==> ')[1].split(':')[-1].split(' ')[0]
+                # Resolve overlap issue
+                if callback_info[idx]['start_t'] < callback_info[idx-1]['end_t']:
+                    while True:
+                        line_idx -= 1
+                        tmp_line = tracecmd_raw[line_idx]
+                        tmp_ts = float(tmp_line.split(': ')[0].split()[-1]) / 1000000000
+                        if tmp_ts < callback_info[idx]['start_t'] or line_idx == 0:
+                            break
 
-                if dst_task == args.task and dst_pid in task_dic:
-                    task_dic[dst_pid]["slice_start_t"] = ts
-                    task_dic[dst_pid]["isRun"] = True
-                if src_task == args.task and src_pid in task_dic:
+            elif ts > callback_info[idx]['start_t']:
+                if dst_proc in proc_exec_info:
+                    proc_exec_info[dst_proc]["slice_start_t"] = ts
+                    proc_exec_info[dst_proc]["isRun"] = True
+                if src_proc in proc_exec_info:
                     # not start case
-                    if task_dic[src_pid]["slice_start_t"] != 0:
-                        acc_runtime = acc_runtime + (ts - task_dic[src_pid]["slice_start_t"])
-                        task_dic[src_pid]["isRun"] = False
+                    if proc_exec_info[src_proc]["slice_start_t"] != 0:
+                        acc_runtime[src_proc] += (ts - proc_exec_info[src_proc]["slice_start_t"])
+                        proc_exec_info[src_proc]["isRun"] = False
                     # start case
                     else:
-                        acc_runtime = acc_runtime + (ts - start_t[idx])
+                        acc_runtime[src_proc] += (ts - callback_info[idx]['start_t'])
 
-    print("[System] Parse dat file Complete")
+            line_idx += 1
 
-    idx = len(actual_runtime)-1
-    while actual_runtime[idx] > 0 and idx > 0:
-        idx = idx-1
+    print("[System] Parse trace-cmd result file Complete")
 
-    os.remove('tmp.txt')
+    if not args.tmp:
+        os.remove('tmp.txt')
 
+    idx = 0
     output_file_path = args.file.split('/')[-1] + "_res.csv"
 
     with open(output_file_path, 'w') as f:
         writer = csv.writer(f, delimiter=',')
-        # Omit First data
-        for i in range(idx+2, len(actual_runtime)):
-            writer.writerow([start_t[i], end_t[i], round(actual_runtime[i], 6)])
-    
+        first_row = ['start_t', 'end_t', 'pid', 'node_name', 'response_t']
+        for key in proc_exec_info:
+            first_row.append(key)
+        writer.writerow(first_row)
+
+        while idx < len(callback_info):
+            res_data = [callback_info[idx]['start_t'], callback_info[idx]['end_t'], callback_info[idx]['pid'],
+                        name_matching_dic[callback_info[idx]['pid']]['node_name'],
+                        callback_info[idx]['end_t'] - callback_info[idx]['start_t']]
+            
+            for proc_name in actual_runtime[idx]:
+                res_data.append(actual_runtime[idx][proc_name])
+
+            writer.writerow(res_data)
+
+            idx += 1
+
     print("[System] Output Completely Generated!")
