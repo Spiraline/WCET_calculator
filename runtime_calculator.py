@@ -8,9 +8,14 @@ idx = 0
 name_matching_dic = {}
 callback_info = []
 pid_exec_info = {}
+
+# acc_runtime by node
 acc_runtime = {}
 
+# exec info by pid
 proc_exec_info = {}
+
+curr_cpu = -1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -64,12 +69,15 @@ if __name__ == "__main__":
             pid = int(line.split(']')[0].split('-')[-1].split()[0])
             if pid in name_matching_dic and 'process_name' not in name_matching_dic[pid]:
                 name_matching_dic[pid]['process_name'] = process_name
-            if process_name not in proc_exec_info:
-                proc_exec_info[process_name] = {'slice_start_t' : 0, 'isRun' : False}
+            elif pid not in name_matching_dic:
+                name_matching_dic[pid] = {'process_name' : process_name}
+            if pid not in proc_exec_info:
+                proc_exec_info[pid] = {'slice_start_t' : 0, 'isRun' : False}
+            
+            if process_name not in acc_runtime:
                 acc_runtime[process_name] = 0
-    
+                
     print("[System] Name Matching between csv and trace-cmd result Complete")
-    print(name_matching_dic)
 
     ### Parse trace-cmd result 
     with open('tmp.txt', 'r') as f:
@@ -89,16 +97,27 @@ if __name__ == "__main__":
             src_proc = line.split(' ==> ')[0].split(' [')[-2].split()[-1].split(':')[0]
             dst_pid = int(line.split(' ==> ')[1].split(':')[-1].split()[0])
             dst_proc = line.split(' ==> ')[1].split(':')[0]
+            cpu = int(line.split('[')[1].split(']')[0])
+
+            if dst_pid == running_pid or (src_pid == running_pid and proc_exec_info[src_pid]["slice_start_t"] == 0):
+                if cpu != curr_cpu:
+                    for pid in proc_exec_info:
+                        if proc_exec_info[pid]["isRun"] and pid in name_matching_dic:
+                            acc_runtime[name_matching_dic[pid]["process_name"]] += (callback_info[idx]['end_t'] - proc_exec_info[pid]["slice_start_t"])
+
+                    for pid in proc_exec_info:
+                        proc_exec_info[pid]["slice_start_t"] = 0
+                        proc_exec_info[pid]["isRun"] = False
+                    curr_cpu = cpu
 
             if ts > callback_info[idx]['end_t'] or line_idx == line_num - 1:
                 # Add remain execution time if running
-                for p_name in acc_runtime:
-                    if proc_exec_info[p_name]["isRun"]:
-                        acc_runtime[p_name] += (callback_info[idx]['end_t'] - proc_exec_info[p_name]["slice_start_t"])
-
-                for p_name in proc_exec_info:
-                    proc_exec_info[p_name]["slice_start_t"] = 0
-                    proc_exec_info[p_name]["isRun"] = False
+                for pid in proc_exec_info:
+                    if proc_exec_info[pid]["isRun"] and pid in name_matching_dic:
+                        acc_runtime[name_matching_dic[pid]["process_name"]] += (callback_info[idx]['end_t'] - proc_exec_info[pid]["slice_start_t"])
+                for pid in proc_exec_info:
+                    proc_exec_info[pid]["slice_start_t"] = 0
+                    proc_exec_info[pid]["isRun"] = False
 
                 actual_runtime.append(copy.deepcopy(acc_runtime))
                 
@@ -106,6 +125,7 @@ if __name__ == "__main__":
                     acc_runtime[p_name] = 0
 
                 idx = idx + 1
+                curr_cpu = -1
 
                 if idx >= len(callback_info) or line_idx == line_num - 1:
                     break
@@ -119,18 +139,18 @@ if __name__ == "__main__":
                         if tmp_ts < callback_info[idx]['start_t'] or line_idx == 0:
                             break
 
-            elif ts > callback_info[idx]['start_t']:
-                if dst_proc in proc_exec_info:
-                    proc_exec_info[dst_proc]["slice_start_t"] = ts
-                    proc_exec_info[dst_proc]["isRun"] = True
-                if src_proc in proc_exec_info:
+            elif ts > callback_info[idx]['start_t'] and curr_cpu == cpu:
+                if dst_pid in proc_exec_info:
+                    proc_exec_info[dst_pid]["slice_start_t"] = ts
+                    proc_exec_info[dst_pid]["isRun"] = True
+                if src_pid in proc_exec_info:
                     # not start case
-                    if proc_exec_info[src_proc]["slice_start_t"] != 0:
-                        acc_runtime[src_proc] += (ts - proc_exec_info[src_proc]["slice_start_t"])
-                        proc_exec_info[src_proc]["isRun"] = False
+                    if proc_exec_info[src_pid]["slice_start_t"] != 0 and name_matching_dic[src_pid]["process_name"] in acc_runtime:
+                        acc_runtime[name_matching_dic[src_pid]["process_name"]] += (ts - proc_exec_info[src_pid]["slice_start_t"])
+                        proc_exec_info[src_pid]["isRun"] = False
                     # start case
-                    else:
-                        acc_runtime[src_proc] += (ts - callback_info[idx]['start_t'])
+                    elif src_pid in name_matching_dic:
+                        acc_runtime[name_matching_dic[src_pid]["process_name"]] += (ts - callback_info[idx]['start_t'])
 
             line_idx += 1
 
@@ -145,7 +165,7 @@ if __name__ == "__main__":
     with open(output_file_path, 'w') as f:
         writer = csv.writer(f, delimiter=',')
         first_row = ['start_t', 'end_t', 'pid', 'node_name', 'response_t']
-        for key in proc_exec_info:
+        for key in actual_runtime[idx]:
             first_row.append(key)
         writer.writerow(first_row)
 
