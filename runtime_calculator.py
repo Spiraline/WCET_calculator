@@ -19,27 +19,27 @@ curr_cpu = -1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--file', '-f', help='file path', required=True)
+    parser.add_argument('--node', '-n', help='node name', required=True)
+    parser.add_argument('--prof', '-p', help='.dat file', default='tmp.dat')
     parser.add_argument('--deli', '-d', help='csv file delimiter', default=',')
-    parser.add_argument('--tmp', '-tp', action='store_true', help='If you have tmp.txt, enable it', default=False)
+    parser.add_argument('--tmp', '-t', action='store_true', help='If you have tmp.txt, enable it', default=False)
     args = parser.parse_args()
 
-    callback_file_path = args.file + ".csv"
-    if not os.path.exists(callback_file_path):
-        print("File not exists : %s" % (callback_file_path))
+    task_execution_file_path = os.getcwd() + '/' + args.node + '.csv'
+    if not os.path.exists(task_execution_file_path):
+        print("csv file not exists : %s" % (task_execution_file_path))
         exit(1)
 
-    trace_file_path = args.file + ".dat"
-    if not args.tmp and not os.path.exists(trace_file_path):
-        print("File not exists : %s" % (trace_file_path))
+    if not args.tmp and not os.path.exists(args.prof):
+        print("Profiling file not exists : %s" % (args.prof))
         exit(1)
 
-    if trace_file_path.split(".") == 1 or trace_file_path.split(".")[-1] != 'dat':
-        print("trace file should be dat file!")
+    if args.prof.split(".") == 1 or args.prof.split(".")[-1] != 'dat':
+        print("Profiling file should be dat file!")
         exit(1)
 
     if not args.tmp:
-        report_cmd = 'trace-cmd report ' + trace_file_path + '| grep switch > tmp.txt'
+        report_cmd = 'trace-cmd report ' + args.prof + '| grep switch > tmp.txt'
         os.system(report_cmd)
         print("[System] trace-cmd for dat file Complete")
     elif not os.path.exists('tmp.txt'):
@@ -51,17 +51,16 @@ if __name__ == "__main__":
     ### Matching PID in csv and .txt file
     # Node name : name in csv
     # Process name : name in trace-cmd
-    with open(callback_file_path, 'r') as f:
+    with open(task_execution_file_path, 'r') as f:
         reader = csv.reader(f, delimiter=args.deli)
         for line in reader:
             # Add callback info
-            callback_info.append({"start_t" : float(line[0]), "end_t" : float(line[1]), "pid" : int(line[3])})
+            callback_info.append({"start_t" : float(line[0]), "end_t" : float(line[1]), "pid" : int(line[2])})
 
             # Add name_matching 
-            pid = int(line[3])
-            node_name = line[5]
+            pid = int(line[2])
             if pid not in name_matching_dic:
-                name_matching_dic[pid] = {'node_name' : node_name}
+                name_matching_dic[pid] = {'node_name' : args.node}
     
     with open('tmp.txt', 'r') as f:
         for line in f.readlines():
@@ -160,7 +159,7 @@ if __name__ == "__main__":
         os.remove('tmp.txt')
 
     idx = 0
-    output_file_path = args.file.split('/')[-1] + "_res.csv"
+    output_file_path = os.getcwd() + '/' + args.node + "_res.csv"
 
     with open(output_file_path, 'w') as f:
         writer = csv.writer(f, delimiter=',')
