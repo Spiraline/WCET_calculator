@@ -2,6 +2,7 @@ import csv
 import argparse
 import os
 import copy
+import tqdm
 
 job_prof_idx = 0
 exec_t_list = []
@@ -70,6 +71,7 @@ if __name__ == "__main__":
     print("[System] Name Matching between csv and trace-cmd result Complete")
 
     ### Parse trace-cmd result 
+
     with open('tmp.txt', 'r') as f:
         tracecmd_raw = f.readlines()
         line_num = len(tracecmd_raw)
@@ -145,7 +147,7 @@ if __name__ == "__main__":
     if not args.tmp:
         os.remove('tmp.txt')
 
-    job_prof_idx = 0
+    job_prof_idx = 2
     output_file_path = os.getcwd() + '/' + args.node + "_res.csv"
 
     with open(output_file_path, 'w') as f:
