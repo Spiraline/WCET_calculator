@@ -18,7 +18,7 @@ sudo apt-get install trace-cmd -y
 ## Process
 1. Run trace-cmd
   ```
-  sudo trace-cmd record -e sched -C mono -o tmp.dat
+  sudo trace-cmd record -e sched_switch -C mono -o tmp.dat
   ```
   You can see `Hit Ctrl^C to stop recording` message.
 2. Run your task (ex : ROS, Autoware)
